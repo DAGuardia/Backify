@@ -238,6 +238,19 @@ tr:hover td { background: rgba(17,24,39,0.5); }
 .hiw-title { font-size: 0.8rem; font-weight: 600; margin-bottom: 0.2rem; }
 .hiw-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; }
 .status-hint { margin-top: 1rem; text-align: center; font-size: 0.8rem; color: var(--text-muted); }
+.spotify-limitation-notice {
+  display: flex; align-items: flex-start; gap: 0.75rem;
+  margin-top: 1.25rem;
+  background: rgba(251,191,36,0.06);
+  border: 1px solid rgba(251,191,36,0.2);
+  border-radius: 10px;
+  padding: 0.875rem 1rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  line-height: 1.5;
+}
+.spotify-limitation-notice strong { color: var(--text); }
+.limitation-icon { font-size: 1rem; flex-shrink: 0; margin-top: 0.1rem; }
 
 /* Rate limit banner */
 .ratelimit-banner {
