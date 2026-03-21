@@ -1,0 +1,69 @@
+@page "/dashboard"
+@inject HttpClient Http
+@inject NavigationManager Nav
+
+<PageTitle>Backify – Dashboard</PageTitle>
+
+@if (_loading)
+{
+    <div class="loading-screen"><span>Loading...</span></div>
+}
+else
+{
+    <!-- Navbar -->
+    <nav class="navbar">
+        <div style="display:flex;align-items:center;gap:.75rem">
+            <span class="navbar-brand">Backify</span>
+            <span class="navbar-tagline">your music history, finally in Spotify</span>
+        </div>
+        <div class="navbar-right">
+            @if (_username != null)
+            {
+                <span class="navbar-user">Signed in as <strong>@_username</strong></span>
+            }
+            <button class="btn-signout" @onclick="Logout">Sign out</button>
+        </div>
+    </nav>
+
+    <!-- Main content -->
+    <main class="main">
+        <h1 class="page-title">Your Music History</h1>
+        <p class="page-subtitle">Import your Last.fm listening history into your Spotify library.</p>
+        <div class="cards">
+            <SyncCard Type="tracks" />
+            <SyncCard Type="albums" />
+        </div>
+    </main>
+}
+
+@code {
+    bool _loading = true;
+    string? _username;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var session = await Http.GetFromJsonAsync<SessionInfo>("session");
+            if (session == null || !session.LastFmConnected || !session.SpotifyConnected)
+            {
+                Nav.NavigateTo("/login");
+                return;
+            }
+            _username = session.LastFmUsername;
+        }
+        catch
+        {
+            Nav.NavigateTo("/login");
+        }
+        finally { _loading = false; }
+    }
+
+    async Task Logout()
+    {
+        await Http.PostAsync("logout", null);
+        Nav.NavigateTo("/login");
+    }
+
+    record SessionInfo(bool LastFmConnected, bool SpotifyConnected, string? LastFmUsername);
+}

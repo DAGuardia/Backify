@@ -1,0 +1,15 @@
+# Build output
+bin/
+obj/
+publish/
+
+# User-specific / secrets
+appsettings.Development.json
+.claude/
+appsettings.Local.json
+*.user
+.vs/
+
+# OS
+.DS_Store
+Thumbs.db

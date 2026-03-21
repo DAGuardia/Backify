@@ -1,0 +1,94 @@
+@if (Items.Count > 0)
+{
+    var found = Items.Count(i => i.Found);
+    var notFound = Items.Count - found;
+    var synced = SyncedIds.Count;
+
+    <div class="preview-summary">
+        <span><span class="found">@found</span> of @Items.Count found on Spotify</span>
+        <span style="display:flex;gap:.75rem;align-items:center">
+            @if (Phase == TablePhase.Preview && notFound > 0)
+            {
+                <span class="not-found">@notFound not found</span>
+            }
+            @if (Phase == TablePhase.Preview)
+            {
+                var sel = Items.Count(i => i.Found && i.SpotifyId != null && Selected.Contains(i.SpotifyId!));
+                <span class="selection-count">@sel selected</span>
+            }
+            @if (Phase is TablePhase.Applying or TablePhase.Done && synced > 0)
+            {
+                <span class="synced-count">@synced synced</span>
+            }
+        </span>
+    </div>
+    <div class="table-wrap">
+        <div class="table-scroll">
+            <table>
+                <thead>
+                    <tr>
+                        <th>#</th>
+                        <th>@(Type == "tracks" ? "Track" : "Album")</th>
+                        <th>Artist</th>
+                        <th>Plays</th>
+                        <th style="text-align:right">@(Phase == TablePhase.Preview ? "Sync" : "Status")</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var item in Items)
+                    {
+                        var isSynced = item.SpotifyId != null && SyncedIds.Contains(item.SpotifyId!);
+                        var isSelected = item.SpotifyId != null && Selected.Contains(item.SpotifyId!);
+                        var rowClass = !item.Found ? "" :
+                            isSynced ? "row-synced" :
+                            Phase == TablePhase.Preview && !isSelected ? "row-skipped" : "";
+
+                        <tr class="@rowClass">
+                            <td class="td-rank">@item.Rank</td>
+                            <td class="td-name">@item.Name</td>
+                            <td class="td-artist">@item.Artist</td>
+                            <td class="td-plays">@item.PlayCount.ToString("N0")</td>
+                            <td class="td-status">
+                                @if (!item.Found)
+                                {
+                                    <span class="badge badge-notfound">Not found</span>
+                                }
+                                else if (Phase == TablePhase.Preview)
+                                {
+                                    <input type="checkbox" class="sync-checkbox"
+                                           checked="@isSelected"
+                                           @onchange="() => OnToggle.InvokeAsync(item.SpotifyId!)" />
+                                }
+                                else if (isSynced)
+                                {
+                                    <span class="badge badge-synced">✓ Synced</span>
+                                }
+                                else if (Phase == TablePhase.Applying)
+                                {
+                                    <span class="badge badge-pending">Pending</span>
+                                }
+                                else
+                                {
+                                    <span class="badge badge-found">Found</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    </div>
+}
+
+@code {
+    [Parameter] public List<PreviewItemDto> Items { get; set; } = new();
+    [Parameter] public string Type { get; set; } = "tracks";
+    [Parameter] public TablePhase Phase { get; set; } = TablePhase.Preview;
+    [Parameter] public HashSet<string> Selected { get; set; } = new();
+    [Parameter] public HashSet<string> SyncedIds { get; set; } = new();
+    [Parameter] public EventCallback<string> OnToggle { get; set; }
+
+    public enum TablePhase { Preview, Applying, Done }
+
+    public record PreviewItemDto(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found);
+}

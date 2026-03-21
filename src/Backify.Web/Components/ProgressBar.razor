@@ -1,0 +1,20 @@
+@if (Total > 0)
+{
+    var pct = (int)Math.Round((double)Done / Total * 100);
+    <div class="progress-wrap">
+        <div class="progress-header">
+            <span>@Label</span>
+            <span>@Done / @Total</span>
+        </div>
+        <div class="progress-track">
+            <div class="progress-fill" style="width: @(pct)%"></div>
+        </div>
+        <div class="progress-pct">@(pct)%</div>
+    </div>
+}
+
+@code {
+    [Parameter] public int Done { get; set; }
+    [Parameter] public int Total { get; set; }
+    [Parameter] public string Label { get; set; } = "Applying...";
+}

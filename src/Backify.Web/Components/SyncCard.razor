@@ -1,0 +1,269 @@
+@inject HttpClient Http
+@inject NavigationManager Nav
+
+<div class="card">
+    <div class="card-header">
+        <div>
+            <div class="card-title">@(IsTrack ? "Top Songs" : "Top Albums")</div>
+            <div class="card-desc">@(IsTrack ? "Like your most-played tracks on Spotify" : "Save your most-played albums to your Spotify library")</div>
+        </div>
+        <div class="card-icon @(IsTrack ? "tracks" : "albums")">@(IsTrack ? "♥" : "◉")</div>
+    </div>
+
+    <!-- Controls -->
+    <div class="controls">
+        <div class="control-group">
+            <label class="control-label">
+                Top <span>@N</span> @(IsTrack ? "tracks" : "albums")
+            </label>
+            <input type="range" min="1" max="@MaxN" @bind="N" @bind:event="oninput"
+                   disabled="@IsBusy" />
+            <div class="range-hints"><span>1</span><span>@MaxN</span></div>
+        </div>
+        <div class="control-group" style="max-width:200px">
+            <label class="control-label">Time period</label>
+            <select @bind="Period" disabled="@IsBusy">
+                <option value="overall">All time</option>
+                <option value="12month">Last 12 months</option>
+                <option value="6month">Last 6 months</option>
+                <option value="3month">Last 3 months</option>
+                <option value="1month">Last month</option>
+                <option value="7day">Last 7 days</option>
+            </select>
+        </div>
+    </div>
+
+    <!-- Buttons -->
+    @if (Status != SyncStatus.Done)
+    {
+        <div class="btn-row">
+            <button class="btn btn-preview" @onclick="HandlePreview" disabled="@IsBusy">
+                @if (Status == SyncStatus.Previewing)
+                {
+                    <div class="spinner"></div>
+                    <span>Searching Spotify...</span>
+                }
+                else
+                {
+                    <span>Preview</span>
+                }
+            </button>
+            @if (Status == SyncStatus.PreviewDone && FoundCount > 0)
+            {
+                <button class="btn @ApplyBtnClass" @onclick="HandleApply" disabled="@(SelectedFoundCount == 0)">
+                    @(IsTrack ? $"Like {SelectedFoundCount} Songs" : $"Save {SelectedFoundCount} Albums")
+                </button>
+            }
+        </div>
+        @if (Status == SyncStatus.PreviewDone && FoundCount > 0)
+        {
+            <div class="selection-row">
+                <button class="btn-link" @onclick="SelectAll">Select all</button>
+                <span class="sep">·</span>
+                <button class="btn-link" @onclick="DeselectAll">Deselect all</button>
+                <span class="selection-count">@SelectedFoundCount of @FoundCount selected</span>
+            </div>
+        }
+    }
+
+    <!-- Done banner -->
+    @if (Status == SyncStatus.Done)
+    {
+        <div class="done-banner">
+            <div class="done-text">
+                <span>✓</span>
+                <span>@(IsTrack ? $"{Progress.Total} songs liked!" : $"{Progress.Total} albums saved!")</span>
+            </div>
+            <button class="btn-reset" @onclick="Reset">Start over</button>
+        </div>
+    }
+
+    <!-- Error -->
+    @if (Status == SyncStatus.Error && ErrorMessage != null)
+    {
+        <div class="error-banner">
+            <div>@ErrorMessage</div>
+            <div style="margin-top:.5rem;display:flex;gap:.75rem;align-items:center">
+                @if (RemainingCount > 0)
+                {
+                    <button class="btn-reset" style="text-decoration:underline" @onclick="HandleRetry">
+                        Retry (@RemainingCount remaining)
+                    </button>
+                }
+                <button class="btn-reset" style="text-decoration:underline" @onclick="Reset">Start over</button>
+            </div>
+        </div>
+    }
+
+    <!-- Progress during apply -->
+    @if (Status == SyncStatus.Applying)
+    {
+        <ProgressBar Done="Progress.Done" Total="Progress.Total"
+                     Label="@(IsTrack ? "Liking songs on Spotify..." : "Saving albums to Spotify...")" />
+    }
+
+    <!-- Preview table -->
+    @if (Results.Count > 0 && Status is SyncStatus.PreviewDone or SyncStatus.Applying or SyncStatus.Done or SyncStatus.Error)
+    {
+        <PreviewTable Items="Results" Type="@Type"
+                      Selected="_selected"
+                      SyncedIds="_syncedIds"
+                      Phase="TablePhaseFromStatus()"
+                      OnToggle="ToggleSelected" />
+    }
+</div>
+
+@code {
+    [Parameter] public string Type { get; set; } = "tracks";
+
+    bool IsTrack => Type == "tracks";
+    int MaxN => IsTrack ? 1000 : 500;
+    string ApplyBtnClass => IsTrack ? "btn-apply-tracks" : "btn-apply-albums";
+    bool IsBusy => Status is SyncStatus.Previewing or SyncStatus.Applying;
+
+    int N = 0;
+    string Period = "overall";
+    SyncStatus Status = SyncStatus.Idle;
+    List<PreviewTable.PreviewItemDto> Results = new();
+    (int Done, int Total) Progress = (0, 0);
+    string? ErrorMessage;
+    HashSet<string> _selected = new();
+    HashSet<string> _syncedIds = new();
+    List<string> _syncIds = new();
+
+    int FoundCount => Results.Count(r => r.Found && r.SpotifyId != null);
+    int SelectedFoundCount => Results.Count(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!));
+    int RemainingCount => _syncIds.Count - Progress.Done;
+
+    protected override void OnInitialized() => N = IsTrack ? 200 : 50;
+
+    PreviewTable.TablePhase TablePhaseFromStatus() => Status switch
+    {
+        SyncStatus.Applying => PreviewTable.TablePhase.Applying,
+        SyncStatus.Done or SyncStatus.Error => PreviewTable.TablePhase.Done,
+        _ => PreviewTable.TablePhase.Preview,
+    };
+
+    void ToggleSelected(string id)
+    {
+        if (!_selected.Add(id)) _selected.Remove(id);
+    }
+
+    void SelectAll()
+    {
+        foreach (var r in Results.Where(r => r.Found && r.SpotifyId != null))
+            _selected.Add(r.SpotifyId!);
+    }
+
+    void DeselectAll() => _selected.Clear();
+
+    async Task HandlePreview()
+    {
+        Status = SyncStatus.Previewing;
+        Results = new();
+        _selected = new();
+        _syncedIds = new();
+        _syncIds = new();
+        ErrorMessage = null;
+        StateHasChanged();
+
+        try
+        {
+            var url = $"{(IsTrack ? "tracks" : "albums")}/preview?n={N}&period={Period}";
+            var items = await Http.GetFromJsonAsync<List<ApiPreviewItem>>(url);
+            Results = (items ?? new()).Select(i =>
+                new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, i.SpotifyId, i.Found)
+            ).ToList();
+            _selected = Results.Where(r => r.Found && r.SpotifyId != null).Select(r => r.SpotifyId!).ToHashSet();
+            Status = SyncStatus.PreviewDone;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+            Status = SyncStatus.Error;
+        }
+    }
+
+    async Task HandleApply()
+    {
+        _syncIds = Results
+            .Where(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!))
+            .Select(r => r.SpotifyId!)
+            .ToList();
+        await RunSync(0);
+    }
+
+    async Task HandleRetry() => await RunSync(Progress.Done);
+
+    async Task RunSync(int startFrom)
+    {
+        var toSync = _syncIds.Skip(startFrom).ToList();
+        if (toSync.Count == 0) return;
+
+        Status = SyncStatus.Applying;
+        Progress = (startFrom, _syncIds.Count);
+        ErrorMessage = null;
+        StateHasChanged();
+
+        var idsParam = Uri.EscapeDataString(string.Join(",", toSync));
+        var streamUrl = $"{Http.BaseAddress}{(IsTrack ? "tracks" : "albums")}/apply/stream?ids={idsParam}";
+
+        try
+        {
+            using var response = await Http.GetAsync(streamUrl, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+
+            using var stream = await response.Content.ReadAsStreamAsync();
+            using var reader = new System.IO.StreamReader(stream);
+
+            while (!reader.EndOfStream)
+            {
+                var line = await reader.ReadLineAsync();
+                if (line == null || !line.StartsWith("data: ")) continue;
+                var json = line["data: ".Length..];
+                var evt = System.Text.Json.JsonSerializer.Deserialize<ProgressEventDto>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (evt == null) continue;
+
+                Progress = (startFrom + evt.Done, _syncIds.Count);
+                _syncedIds = _syncIds.Take(Progress.Done).ToHashSet();
+
+                if (evt.Error != null)
+                {
+                    ErrorMessage = evt.Error;
+                    Status = SyncStatus.Error;
+                    StateHasChanged();
+                    return;
+                }
+
+                if (evt.Complete) Status = SyncStatus.Done;
+                StateHasChanged();
+            }
+
+            if (Status == SyncStatus.Applying) Status = SyncStatus.Done;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+            Status = SyncStatus.Error;
+        }
+
+        StateHasChanged();
+    }
+
+    void Reset()
+    {
+        Status = SyncStatus.Idle;
+        Results = new();
+        Progress = (0, 0);
+        ErrorMessage = null;
+        _selected = new();
+        _syncedIds = new();
+        _syncIds = new();
+    }
+
+    enum SyncStatus { Idle, Previewing, PreviewDone, Applying, Done, Error }
+
+    record ApiPreviewItem(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found);
+    record ProgressEventDto(int Done, int Total, bool Complete, string? Error);
+}
