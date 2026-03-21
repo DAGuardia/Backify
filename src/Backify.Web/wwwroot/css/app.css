@@ -25,6 +25,8 @@ body {
   font-size: 14px;
   line-height: 1.5;
   min-height: 100vh;
+  display: flex;
+  flex-direction: column;
 }
 
 a { color: inherit; text-decoration: none; }
@@ -179,7 +181,7 @@ tr:hover td { background: rgba(17,24,39,0.5); }
 
 /* Login page */
 .login-page {
-  min-height: 100vh; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem 1.5rem;
+  flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 2rem 1rem 1.5rem;
 }
 .login-box { width: 100%; max-width: 440px; }
 .login-logo {
