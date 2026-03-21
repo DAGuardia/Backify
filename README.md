@@ -97,48 +97,6 @@ Open [http://127.0.0.1:5173](http://127.0.0.1:5173)
 
 ---
 
-## Deploying to Azure
-
-The repo includes a GitHub Actions workflow that deploys on every push to `main`.
-
-### 1. Create Azure resources
-
-```bash
-az login
-az group create --name backify-rg --location westeurope
-az appservice plan create --name backify-plan --resource-group backify-rg --sku F1 --is-linux
-az webapp create --name YOUR-APP-NAME --resource-group backify-rg --plan backify-plan --runtime "DOTNETCORE:9.0"
-```
-
-### 2. Set environment variables
-
-```bash
-az webapp config appsettings set --name YOUR-APP-NAME --resource-group backify-rg --settings \
-  "App__FrontendOrigin=https://YOUR-APP-NAME.azurewebsites.net" \
-  "App__LastFm__ApiKey=..." \
-  "App__LastFm__SharedSecret=..." \
-  "App__LastFm__CallbackUri=https://YOUR-APP-NAME.azurewebsites.net/auth/lastfm/callback" \
-  "App__Spotify__ClientId=..." \
-  "App__Spotify__ClientSecret=..." \
-  "App__Spotify__RedirectUri=https://YOUR-APP-NAME.azurewebsites.net/auth/spotify/callback"
-```
-
-### 3. Add publish profile to GitHub
-
-- Azure Portal → App Service → *Get publish profile* → copy the XML
-- GitHub repo → Settings → Secrets and variables → Actions → New secret
-- Name: `AZURE_WEBAPP_PUBLISH_PROFILE`, value: the XML
-
-### 4. Update redirect URIs
-
-Update your Spotify and Last.fm apps to use the Azure URLs from step 2.
-
-### 5. Push to main
-
-GitHub Actions will build and deploy automatically.
-
----
-
 ## Architecture
 
 ```
