@@ -112,7 +112,7 @@
         var pct = _countdownTotal > 0 ? (int)((double)_countdownSeconds / _countdownTotal * 100) : 0;
         <div class="ratelimit-banner">
             <div class="ratelimit-text">
-                <span>Spotify is limiting requests — resuming in <strong>@($"{_countdownSeconds / 60}:{_countdownSeconds % 60:D2}")</strong></span>
+                <span>Spotify is limiting requests — resuming in <strong>@FormatCountdown(_countdownSeconds)</strong></span>
                 <button class="btn-reset" style="text-decoration:underline;margin-left:.75rem" @onclick="CancelCountdown">Cancel</button>
             </div>
             <div class="progress-track" style="margin-top:.5rem">
@@ -418,6 +418,14 @@
         _syncedIds = new();
         _syncIds = new();
         _previewRateLimited = false;
+    }
+
+    static string FormatCountdown(int seconds)
+    {
+        var h = seconds / 3600;
+        var m = seconds % 3600 / 60;
+        var s = seconds % 60;
+        return h > 0 ? $"{h}:{m:D2}:{s:D2}" : $"{m}:{s:D2}";
     }
 
     enum SyncStatus { Idle, Previewing, PreviewDone, Applying, RateLimited, Done, Error }
