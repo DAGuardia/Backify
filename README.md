@@ -8,6 +8,16 @@ Live at: [backify-app.azurewebsites.net](https://backify-app.azurewebsites.net)
 
 ---
 
+## ⚠️ Spotify API Limitation
+
+Thanks to Spotify's **brilliant** decision to require 250,000 monthly active users and proof of revenue before granting extended API access — and their equally **inspired** move to exclude individual developers entirely as of May 2025 — this app is stuck in **development mode**.
+
+This means **only 25 Spotify accounts can use it**, and each one must be manually allowlisted.
+
+**If you want to use it, run it locally with your own API keys — the instructions are below.**
+
+---
+
 ## How it works
 
 1. Connect your Last.fm and Spotify accounts via OAuth
