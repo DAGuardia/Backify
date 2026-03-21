@@ -17,6 +17,7 @@ builder.Services.AddScoped<LastFmService>();
 builder.Services.AddScoped<SpotifyService>();
 builder.Services.AddScoped<TracksOrchestrator>();
 builder.Services.AddScoped<AlbumsOrchestrator>();
+builder.Services.AddScoped<ArtistsOrchestrator>();
 
 // Session
 var redisConn = builder.Configuration.GetConnectionString("Redis");

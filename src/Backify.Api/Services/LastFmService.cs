@@ -152,4 +152,57 @@ public class LastFmService(HttpClient http, AppConfig config)
 
         return albums;
     }
+
+    public async Task<List<PreviewItem>> GetTopArtistsAsync(string username, int n, string period)
+    {
+        var artists = new List<PreviewItem>();
+        int page = 1;
+
+        while (artists.Count < n)
+        {
+            int remaining = n - artists.Count;
+            int currentPageSize = Math.Min(remaining, 1000);
+
+            var parameters = new Dictionary<string, string>
+            {
+                ["method"] = "user.getTopArtists",
+                ["user"] = username,
+                ["api_key"] = config.LastFm.ApiKey,
+                ["limit"] = currentPageSize.ToString(),
+                ["period"] = period,
+                ["page"] = page.ToString(),
+                ["format"] = "json",
+            };
+
+            var query = string.Join("&", parameters.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value)}"));
+            var response = await http.GetAsync($"{BaseUrl}?{query}");
+            response.EnsureSuccessStatusCode();
+
+            var json = await response.Content.ReadAsStreamAsync();
+            var doc = await JsonDocument.ParseAsync(json);
+
+            if (doc.RootElement.TryGetProperty("error", out _))
+                throw new Exception(doc.RootElement.GetProperty("message").GetString() ?? "Last.fm error");
+
+            var items = doc.RootElement.GetProperty("topartists").GetProperty("artist").EnumerateArray().ToList();
+            if (items.Count == 0) break;
+
+            foreach (var item in items)
+            {
+                if (artists.Count >= n) break;
+                artists.Add(new PreviewItem
+                {
+                    Rank = artists.Count + 1,
+                    Name = item.GetProperty("name").GetString() ?? "",
+                    Artist = "",
+                    PlayCount = int.TryParse(item.GetProperty("playcount").GetString(), out var pc) ? pc : 0,
+                });
+            }
+
+            if (items.Count < currentPageSize) break;
+            page++;
+        }
+
+        return artists;
+    }
 }

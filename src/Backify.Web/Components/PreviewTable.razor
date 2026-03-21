@@ -28,8 +28,8 @@
                 <thead>
                     <tr>
                         <th>#</th>
-                        <th>@(Type == "tracks" ? "Track" : "Album")</th>
-                        <th>Artist</th>
+                        <th>@(Type == "tracks" ? "Track" : Type == "artists" ? "Artist" : "Album")</th>
+                        @if (Type != "artists") { <th>Artist</th> }
                         <th>Plays</th>
                         <th style="text-align:right">@(Phase == TablePhase.Preview ? "Sync" : "Status")</th>
                     </tr>
@@ -46,7 +46,7 @@
                         <tr class="@rowClass">
                             <td class="td-rank">@item.Rank</td>
                             <td class="td-name">@item.Name</td>
-                            <td class="td-artist">@item.Artist</td>
+                            @if (Type != "artists") { <td class="td-artist">@item.Artist</td> }
                             <td class="td-plays">@item.PlayCount.ToString("N0")</td>
                             <td class="td-status">
                                 @if (!item.Found)

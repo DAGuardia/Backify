@@ -4,10 +4,10 @@
 <div class="card">
     <div class="card-header">
         <div>
-            <div class="card-title">@(IsTrack ? "Top Songs" : "Top Albums")</div>
-            <div class="card-desc">@(IsTrack ? "Like your most-played tracks on Spotify" : "Save your most-played albums to your Spotify library")</div>
+            <div class="card-title">@(IsTrack ? "Top Songs" : IsArtist ? "Top Artists" : "Top Albums")</div>
+            <div class="card-desc">@(IsTrack ? "Like your most-played tracks on Spotify" : IsArtist ? "Follow your most-listened artists on Spotify" : "Save your most-played albums to your Spotify library")</div>
         </div>
-        <div class="card-icon @(IsTrack ? "tracks" : "albums")">@(IsTrack ? "♥" : "◉")</div>
+        <div class="card-icon @(IsTrack ? "tracks" : IsArtist ? "artists" : "albums")">@(IsTrack ? "♥" : IsArtist ? "★" : "◉")</div>
     </div>
 
     <!-- Controls -->
@@ -51,7 +51,7 @@
             @if (Status == SyncStatus.PreviewDone && FoundCount > 0)
             {
                 <button class="btn @ApplyBtnClass" @onclick="HandleApply" disabled="@(SelectedFoundCount == 0)">
-                    @(IsTrack ? $"Like {SelectedFoundCount} Songs" : $"Save {SelectedFoundCount} Albums")
+                    @(IsTrack ? $"Like {SelectedFoundCount} Songs" : IsArtist ? $"Follow {SelectedFoundCount} Artists" : $"Save {SelectedFoundCount} Albums")
                 </button>
             }
         </div>
@@ -76,7 +76,7 @@
         <div class="done-banner">
             <div class="done-text">
                 <span>✓</span>
-                <span>@(IsTrack ? $"{Progress.Total} songs liked!" : $"{Progress.Total} albums saved!")</span>
+                <span>@(IsTrack ? $"{Progress.Total} songs liked!" : IsArtist ? $"{Progress.Total} artists followed!" : $"{Progress.Total} albums saved!")</span>
             </div>
             <button class="btn-reset" @onclick="Reset">Start over</button>
         </div>
@@ -103,7 +103,7 @@
     @if (Status == SyncStatus.Applying)
     {
         <ProgressBar Done="Progress.Done" Total="Progress.Total"
-                     Label="@(IsTrack ? "Liking songs on Spotify..." : "Saving albums to Spotify...")" />
+                     Label="@(IsTrack ? "Liking songs on Spotify..." : IsArtist ? "Following artists on Spotify..." : "Saving albums to Spotify...")" />
     }
 
     <!-- Rate limit countdown -->
@@ -140,8 +140,9 @@
     [Parameter] public string Type { get; set; } = "tracks";
 
     bool IsTrack => Type == "tracks";
+    bool IsArtist => Type == "artists";
     int MaxN => IsTrack ? 1000 : 500;
-    string ApplyBtnClass => IsTrack ? "btn-apply-tracks" : "btn-apply-albums";
+    string ApplyBtnClass => IsTrack ? "btn-apply-tracks" : IsArtist ? "btn-apply-artists" : "btn-apply-albums";
     bool IsBusy => Status is SyncStatus.Previewing or SyncStatus.Applying or SyncStatus.RateLimited;
 
     int N = 0;
@@ -163,6 +164,7 @@
     int RemainingCount => _syncIds.Count - Progress.Done;
 
     protected override void OnInitialized() => N = IsTrack ? 200 : 50;
+
 
     PreviewTable.TablePhase TablePhaseFromStatus() => Status switch
     {
@@ -198,7 +200,7 @@
 
         try
         {
-            var url = $"{(IsTrack ? "tracks" : "albums")}/preview?n={N}&period={Period}";
+            var url = $"{Type}/preview?n={N}&period={Period}";
             var response = await Http.GetFromJsonAsync<ApiPreviewResponse>(url);
             ProcessPreviewResponse(response!);
 
@@ -258,7 +260,7 @@
 
         try
         {
-            var url = $"{(IsTrack ? "tracks" : "albums")}/search-items";
+            var url = $"{Type}/search-items";
             var httpResponse = await Http.PostAsJsonAsync(url, unmatched);
             httpResponse.EnsureSuccessStatusCode();
             var result = await httpResponse.Content.ReadFromJsonAsync<ApiPreviewResponse>();
@@ -356,7 +358,7 @@
         StateHasChanged();
 
         var idsParam = Uri.EscapeDataString(string.Join(",", toSync));
-        var streamUrl = $"{Http.BaseAddress}{(IsTrack ? "tracks" : "albums")}/apply/stream?ids={idsParam}";
+        var streamUrl = $"{Http.BaseAddress}{Type}/apply/stream?ids={idsParam}";
 
         try
         {

@@ -152,12 +152,24 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var json = await response.Content.ReadAsStreamAsync();
         var doc = await JsonDocument.ParseAsync(json);
 
-        var pluralType = type == "track" ? "tracks" : "albums";
+        var pluralType = type switch { "track" => "tracks", "artist" => "artists", _ => "albums" };
         var items = doc.RootElement.GetProperty(pluralType).GetProperty("items").EnumerateArray().ToList();
         if (items.Count > 0)
             return (items[0].GetProperty("id").GetString(), 0);
 
         return (null, 0);
+    }
+
+    public async Task<(string? Id, int RateLimitSeconds)> SearchArtistAsync(SpotifySession session, string artist)
+    {
+        var token = await GetValidTokenAsync(session);
+
+        var q1 = $"artist:\"{artist}\"";
+        var (id1, rl1) = await DoSearchAsync(token, q1, "artist");
+        if (id1 != null) return (id1, 0);
+        if (rl1 > 0) return (null, rl1);
+
+        return await DoSearchAsync(token, artist, "artist");
     }
 
     public async Task LikeTracksAsync(SpotifySession session, IEnumerable<string> trackIds)
@@ -178,6 +190,18 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var uris = string.Join(",", albumIds.Select(id => Uri.EscapeDataString($"spotify:album:{id}")));
         var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/library?uris={uris}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        var response = await http.SendAsync(request);
+        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task FollowArtistsAsync(SpotifySession session, IEnumerable<string> artistIds)
+    {
+        var token = await GetValidTokenAsync(session);
+        var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/following?type=artist");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+        request.Content = System.Net.Http.Json.JsonContent.Create(new { ids = artistIds.ToArray() });
         var response = await http.SendAsync(request);
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
             throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
