@@ -62,6 +62,12 @@ public class AlbumsController(AlbumsOrchestrator orchestrator, SpotifyService sp
                 if (done < total) await Task.Delay(350);
             }
         }
+        catch (SpotifyRateLimitException rl)
+        {
+            var evt = JsonSerializer.Serialize(new ProgressEvent { Done = done, Total = total, RateLimit = true, WaitSeconds = rl.RetryAfterSeconds });
+            await Response.WriteAsync($"data: {evt}\n\n");
+            await Response.Body.FlushAsync();
+        }
         catch (Exception ex)
         {
             var evt = JsonSerializer.Serialize(new ProgressEvent { Done = done, Total = total, Error = ex.Message });

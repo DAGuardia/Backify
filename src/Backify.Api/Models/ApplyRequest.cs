@@ -11,4 +11,6 @@ public class ProgressEvent
     public int Total { get; set; }
     public bool Complete { get; set; }
     public string? Error { get; set; }
+    public bool RateLimit { get; set; }
+    public int WaitSeconds { get; set; }
 }

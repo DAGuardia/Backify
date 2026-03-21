@@ -172,6 +172,8 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/library?uris={uris}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await http.SendAsync(request);
+        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
         response.EnsureSuccessStatusCode();
     }
 
@@ -182,6 +184,13 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/library?uris={uris}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await http.SendAsync(request);
+        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
+            throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
         response.EnsureSuccessStatusCode();
     }
+}
+
+public class SpotifyRateLimitException(int retryAfterSeconds) : Exception("Rate limited by Spotify")
+{
+    public int RetryAfterSeconds { get; } = retryAfterSeconds;
 }

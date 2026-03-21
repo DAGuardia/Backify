@@ -239,6 +239,19 @@ tr:hover td { background: rgba(17,24,39,0.5); }
 .hiw-desc { font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; }
 .status-hint { margin-top: 1rem; text-align: center; font-size: 0.8rem; color: var(--text-muted); }
 
+/* Rate limit banner */
+.ratelimit-banner {
+  margin-top: 1rem;
+  background: rgba(251,191,36,0.08);
+  border: 1px solid rgba(251,191,36,0.25);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  color: #fbbf24;
+}
+.ratelimit-text { display: flex; align-items: center; }
+.ratelimit-fill { background: #fbbf24 !important; }
+
 /* Selection controls */
 .selection-row {
   display: flex; align-items: center; gap: 0.5rem;

@@ -102,8 +102,24 @@
                      Label="@(IsTrack ? "Liking songs on Spotify..." : "Saving albums to Spotify...")" />
     }
 
+    <!-- Rate limit countdown -->
+    @if (Status == SyncStatus.RateLimited)
+    {
+        var pct = _countdownTotal > 0 ? (int)((double)_countdownSeconds / _countdownTotal * 100) : 0;
+        <div class="ratelimit-banner">
+            <div class="ratelimit-text">
+                <span>Spotify is limiting requests — resuming in <strong>@_countdownSeconds s</strong></span>
+                <button class="btn-reset" style="text-decoration:underline;margin-left:.75rem" @onclick="CancelCountdown">Cancel</button>
+            </div>
+            <div class="progress-track" style="margin-top:.5rem">
+                <div class="progress-fill ratelimit-fill" style="width:@(pct)%;transition:width 1s linear"></div>
+            </div>
+        </div>
+        <ProgressBar Done="Progress.Done" Total="Progress.Total" Label="Paused — waiting for Spotify..." />
+    }
+
     <!-- Preview table -->
-    @if (Results.Count > 0 && Status is SyncStatus.PreviewDone or SyncStatus.Applying or SyncStatus.Done or SyncStatus.Error)
+    @if (Results.Count > 0 && Status is SyncStatus.PreviewDone or SyncStatus.Applying or SyncStatus.RateLimited or SyncStatus.Done or SyncStatus.Error)
     {
         <PreviewTable Items="Results" Type="@Type"
                       Selected="_selected"
@@ -119,7 +135,7 @@
     bool IsTrack => Type == "tracks";
     int MaxN => IsTrack ? 1000 : 500;
     string ApplyBtnClass => IsTrack ? "btn-apply-tracks" : "btn-apply-albums";
-    bool IsBusy => Status is SyncStatus.Previewing or SyncStatus.Applying;
+    bool IsBusy => Status is SyncStatus.Previewing or SyncStatus.Applying or SyncStatus.RateLimited;
 
     int N = 0;
     string Period = "overall";
@@ -130,6 +146,9 @@
     HashSet<string> _selected = new();
     HashSet<string> _syncedIds = new();
     List<string> _syncIds = new();
+    int _countdownSeconds = 0;
+    int _countdownTotal = 0;
+    CancellationTokenSource? _countdownCts;
 
     int FoundCount => Results.Count(r => r.Found && r.SpotifyId != null);
     int SelectedFoundCount => Results.Count(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!));
@@ -139,7 +158,7 @@
 
     PreviewTable.TablePhase TablePhaseFromStatus() => Status switch
     {
-        SyncStatus.Applying => PreviewTable.TablePhase.Applying,
+        SyncStatus.Applying or SyncStatus.RateLimited => PreviewTable.TablePhase.Applying,
         SyncStatus.Done or SyncStatus.Error => PreviewTable.TablePhase.Done,
         _ => PreviewTable.TablePhase.Preview,
     };
@@ -190,15 +209,48 @@
             .Where(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!))
             .Select(r => r.SpotifyId!)
             .ToList();
-        await RunSync(0);
+        var waitSeconds = await RunSync(0);
+        if (waitSeconds > 0) await StartCountdown(waitSeconds);
     }
 
-    async Task HandleRetry() => await RunSync(Progress.Done);
+    async Task HandleRetry()
+    {
+        var waitSeconds = await RunSync(Progress.Done);
+        if (waitSeconds > 0) await StartCountdown(waitSeconds);
+    }
 
-    async Task RunSync(int startFrom)
+    async Task StartCountdown(int seconds)
+    {
+        _countdownSeconds = seconds;
+        _countdownTotal = seconds;
+        Status = SyncStatus.RateLimited;
+        _countdownCts = new CancellationTokenSource();
+        try
+        {
+            while (_countdownSeconds > 0)
+            {
+                StateHasChanged();
+                await Task.Delay(1000, _countdownCts.Token);
+                _countdownSeconds--;
+            }
+            StateHasChanged();
+            var waitAgain = await RunSync(Progress.Done);
+            if (waitAgain > 0) await StartCountdown(waitAgain);
+        }
+        catch (OperationCanceledException)
+        {
+            Status = SyncStatus.Error;
+            ErrorMessage = "Sync paused — resume when ready.";
+            StateHasChanged();
+        }
+    }
+
+    void CancelCountdown() => _countdownCts?.Cancel();
+
+    async Task<int> RunSync(int startFrom)
     {
         var toSync = _syncIds.Skip(startFrom).ToList();
-        if (toSync.Count == 0) return;
+        if (toSync.Count == 0) return 0;
 
         Status = SyncStatus.Applying;
         Progress = (startFrom, _syncIds.Count);
@@ -228,12 +280,18 @@
                 Progress = (startFrom + evt.Done, _syncIds.Count);
                 _syncedIds = _syncIds.Take(Progress.Done).ToHashSet();
 
+                if (evt.RateLimit)
+                {
+                    StateHasChanged();
+                    return evt.WaitSeconds > 0 ? evt.WaitSeconds : 30;
+                }
+
                 if (evt.Error != null)
                 {
                     ErrorMessage = evt.Error;
                     Status = SyncStatus.Error;
                     StateHasChanged();
-                    return;
+                    return 0;
                 }
 
                 if (evt.Complete) Status = SyncStatus.Done;
@@ -249,6 +307,7 @@
         }
 
         StateHasChanged();
+        return 0;
     }
 
     void Reset()
@@ -262,8 +321,8 @@
         _syncIds = new();
     }
 
-    enum SyncStatus { Idle, Previewing, PreviewDone, Applying, Done, Error }
+    enum SyncStatus { Idle, Previewing, PreviewDone, Applying, RateLimited, Done, Error }
 
     record ApiPreviewItem(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found);
-    record ProgressEventDto(int Done, int Total, bool Complete, string? Error);
+    record ProgressEventDto(int Done, int Total, bool Complete, string? Error, bool RateLimit, int WaitSeconds);
 }
