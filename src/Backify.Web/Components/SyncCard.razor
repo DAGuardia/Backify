@@ -62,6 +62,10 @@
                 <span class="sep">·</span>
                 <button class="btn-link" @onclick="DeselectAll">Deselect all</button>
                 <span class="selection-count">@SelectedFoundCount of @FoundCount selected</span>
+                @if (_previewRateLimited)
+                {
+                    <button class="btn-link" style="margin-left:auto;color:#fbbf24" @onclick="TriggerRetrySearch">Retry unmatched</button>
+                }
             </div>
         }
     }
@@ -115,7 +119,10 @@
                 <div class="progress-fill ratelimit-fill" style="width:@(pct)%;transition:width 1s linear"></div>
             </div>
         </div>
-        <ProgressBar Done="Progress.Done" Total="Progress.Total" Label="Paused — waiting for Spotify..." />
+        @if (_syncIds.Count > 0)
+        {
+            <ProgressBar Done="Progress.Done" Total="Progress.Total" Label="Paused — waiting for Spotify..." />
+        }
     }
 
     <!-- Preview table -->
@@ -146,6 +153,7 @@
     HashSet<string> _selected = new();
     HashSet<string> _syncedIds = new();
     List<string> _syncIds = new();
+    bool _previewRateLimited = false;
     int _countdownSeconds = 0;
     int _countdownTotal = 0;
     CancellationTokenSource? _countdownCts;
@@ -158,7 +166,8 @@
 
     PreviewTable.TablePhase TablePhaseFromStatus() => Status switch
     {
-        SyncStatus.Applying or SyncStatus.RateLimited => PreviewTable.TablePhase.Applying,
+        SyncStatus.Applying => PreviewTable.TablePhase.Applying,
+        SyncStatus.RateLimited => _syncIds.Count > 0 ? PreviewTable.TablePhase.Applying : PreviewTable.TablePhase.Preview,
         SyncStatus.Done or SyncStatus.Error => PreviewTable.TablePhase.Done,
         _ => PreviewTable.TablePhase.Preview,
     };
@@ -183,24 +192,108 @@
         _selected = new();
         _syncedIds = new();
         _syncIds = new();
+        _previewRateLimited = false;
         ErrorMessage = null;
         StateHasChanged();
 
         try
         {
             var url = $"{(IsTrack ? "tracks" : "albums")}/preview?n={N}&period={Period}";
-            var items = await Http.GetFromJsonAsync<List<ApiPreviewItem>>(url);
-            Results = (items ?? new()).Select(i =>
-                new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, i.SpotifyId, i.Found)
-            ).ToList();
-            _selected = Results.Where(r => r.Found && r.SpotifyId != null).Select(r => r.SpotifyId!).ToHashSet();
-            Status = SyncStatus.PreviewDone;
+            var response = await Http.GetFromJsonAsync<ApiPreviewResponse>(url);
+            ProcessPreviewResponse(response!);
+
+            if (response!.RateLimitSeconds > 0)
+            {
+                _previewRateLimited = true;
+                await StartCountdown(
+                    response.RateLimitSeconds + 2,
+                    HandleRetrySearch,
+                    () => { Status = SyncStatus.PreviewDone; _previewRateLimited = true; StateHasChanged(); }
+                );
+            }
+            else
+            {
+                Status = SyncStatus.PreviewDone;
+            }
         }
         catch (Exception ex)
         {
             ErrorMessage = ex.Message;
             Status = SyncStatus.Error;
         }
+    }
+
+    void ProcessPreviewResponse(ApiPreviewResponse response)
+    {
+        var newItems = response.Items.Select(i =>
+            new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, i.SpotifyId, i.Found)
+        ).ToList();
+
+        if (Results.Count == 0)
+        {
+            Results = newItems;
+            _selected = Results.Where(r => r.Found && r.SpotifyId != null).Select(r => r.SpotifyId!).ToHashSet();
+        }
+        else
+        {
+            var byRank = newItems.ToDictionary(i => i.Rank);
+            Results = Results.Select(r => !r.Found && byRank.TryGetValue(r.Rank, out var updated) ? updated : r).ToList();
+            foreach (var r in Results.Where(r => r.Found && r.SpotifyId != null))
+                _selected.Add(r.SpotifyId!);
+        }
+    }
+
+    async Task<int> HandleRetrySearch()
+    {
+        var unmatched = Results.Where(r => !r.Found)
+            .Select(r => new { r.Rank, r.Name, r.Artist, r.PlayCount })
+            .ToList();
+
+        if (unmatched.Count == 0)
+        {
+            _previewRateLimited = false;
+            Status = SyncStatus.PreviewDone;
+            return 0;
+        }
+
+        try
+        {
+            var url = $"{(IsTrack ? "tracks" : "albums")}/search-items";
+            var httpResponse = await Http.PostAsJsonAsync(url, unmatched);
+            httpResponse.EnsureSuccessStatusCode();
+            var result = await httpResponse.Content.ReadFromJsonAsync<ApiPreviewResponse>();
+
+            ProcessPreviewResponse(result!);
+
+            if (result!.RateLimitSeconds > 0)
+            {
+                _previewRateLimited = true;
+                return result.RateLimitSeconds + 2;
+            }
+
+            _previewRateLimited = false;
+            Status = SyncStatus.PreviewDone;
+            return 0;
+        }
+        catch (Exception ex)
+        {
+            ErrorMessage = ex.Message;
+            Status = SyncStatus.Error;
+            return 0;
+        }
+    }
+
+    async Task TriggerRetrySearch()
+    {
+        Status = SyncStatus.Previewing;
+        StateHasChanged();
+        var wait = await HandleRetrySearch();
+        if (wait > 0)
+            await StartCountdown(
+                wait,
+                HandleRetrySearch,
+                () => { Status = SyncStatus.PreviewDone; _previewRateLimited = true; StateHasChanged(); }
+            );
     }
 
     async Task HandleApply()
@@ -210,16 +303,16 @@
             .Select(r => r.SpotifyId!)
             .ToList();
         var waitSeconds = await RunSync(0);
-        if (waitSeconds > 0) await StartCountdown(waitSeconds);
+        if (waitSeconds > 0) await StartCountdown(waitSeconds, () => RunSync(Progress.Done));
     }
 
     async Task HandleRetry()
     {
         var waitSeconds = await RunSync(Progress.Done);
-        if (waitSeconds > 0) await StartCountdown(waitSeconds);
+        if (waitSeconds > 0) await StartCountdown(waitSeconds, () => RunSync(Progress.Done));
     }
 
-    async Task StartCountdown(int seconds)
+    async Task StartCountdown(int seconds, Func<Task<int>> onComplete, Action? onCancel = null)
     {
         _countdownSeconds = seconds;
         _countdownTotal = seconds;
@@ -234,14 +327,19 @@
                 _countdownSeconds--;
             }
             StateHasChanged();
-            var waitAgain = await RunSync(Progress.Done);
-            if (waitAgain > 0) await StartCountdown(waitAgain);
+            var waitAgain = await onComplete();
+            if (waitAgain > 0) await StartCountdown(waitAgain, onComplete, onCancel);
         }
         catch (OperationCanceledException)
         {
-            Status = SyncStatus.Error;
-            ErrorMessage = "Sync paused — resume when ready.";
-            StateHasChanged();
+            if (onCancel != null)
+                onCancel();
+            else
+            {
+                Status = SyncStatus.Error;
+                ErrorMessage = "Sync paused — resume when ready.";
+                StateHasChanged();
+            }
         }
     }
 
@@ -319,10 +417,12 @@
         _selected = new();
         _syncedIds = new();
         _syncIds = new();
+        _previewRateLimited = false;
     }
 
     enum SyncStatus { Idle, Previewing, PreviewDone, Applying, RateLimited, Done, Error }
 
     record ApiPreviewItem(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found);
+    record ApiPreviewResponse(List<ApiPreviewItem> Items, int RateLimitSeconds);
     record ProgressEventDto(int Done, int Total, bool Complete, string? Error, bool RateLimit, int WaitSeconds);
 }

@@ -20,8 +20,21 @@ public class TracksController(TracksOrchestrator orchestrator, SpotifyService sp
         if (n < 1 || n > 1000 || !ValidPeriods.Contains(period))
             return BadRequest(new { error = "Invalid parameters" });
 
-        var results = await orchestrator.PreviewAsync(lfm!, sp!, n, period);
-        return Ok(results);
+        var response = await orchestrator.PreviewAsync(lfm!, sp!, n, period);
+        return Ok(response);
+    }
+
+    [HttpPost("search-items")]
+    public async Task<IActionResult> SearchItems([FromBody] List<PreviewItem> items)
+    {
+        if (!GetSessions(out _, out var sp))
+            return Unauthorized(new { error = "Not authenticated" });
+
+        if (items == null || items.Count == 0)
+            return BadRequest(new { error = "No items" });
+
+        var response = await orchestrator.SearchItemsAsync(sp!, items);
+        return Ok(response);
     }
 
     [HttpGet("apply/stream")]

@@ -14,3 +14,9 @@ public class ProgressEvent
     public bool RateLimit { get; set; }
     public int WaitSeconds { get; set; }
 }
+
+public class PreviewResponse
+{
+    public List<PreviewItem> Items { get; set; } = new();
+    public int RateLimitSeconds { get; set; }
+}

@@ -107,58 +107,57 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         return session.AccessToken;
     }
 
-    public async Task<string?> SearchTrackAsync(SpotifySession session, string track, string artist)
+    public async Task<(string? Id, int RateLimitSeconds)> SearchTrackAsync(SpotifySession session, string track, string artist)
     {
         var token = await GetValidTokenAsync(session);
 
-        // Exact fielded search first
         var q1 = $"track:\"{track}\" artist:\"{artist}\"";
-        var id = await DoSearchAsync(token, q1, "track");
-        if (id != null) return id;
+        var (id1, rl1) = await DoSearchAsync(token, q1, "track");
+        if (id1 != null) return (id1, 0);
+        if (rl1 > 0) return (null, rl1);
 
-        // Fallback unfielded
         var q2 = $"{track} {artist}";
         return await DoSearchAsync(token, q2, "track");
     }
 
-    public async Task<string?> SearchAlbumAsync(SpotifySession session, string album, string artist)
+    public async Task<(string? Id, int RateLimitSeconds)> SearchAlbumAsync(SpotifySession session, string album, string artist)
     {
         var token = await GetValidTokenAsync(session);
 
         var q1 = $"album:\"{album}\" artist:\"{artist}\"";
-        var id = await DoSearchAsync(token, q1, "album");
-        if (id != null) return id;
+        var (id1, rl1) = await DoSearchAsync(token, q1, "album");
+        if (id1 != null) return (id1, 0);
+        if (rl1 > 0) return (null, rl1);
 
         var q2 = $"{album} {artist}";
         return await DoSearchAsync(token, q2, "album");
     }
 
-    private async Task<string?> DoSearchAsync(string token, string query, string type)
+    private async Task<(string? Id, int RateLimitSeconds)> DoSearchAsync(string token, string query, string type)
     {
-        for (int attempt = 0; attempt < 3; attempt++)
+        var qs = $"?q={Uri.EscapeDataString(query)}&type={type}&limit=1";
+        var request = new HttpRequestMessage(HttpMethod.Get, $"{ApiUrl}/search{qs}");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
+
+        var response = await http.SendAsync(request);
+
+        if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
         {
-            var qs = $"?q={Uri.EscapeDataString(query)}&type={type}&limit=1";
-            var request = new HttpRequestMessage(HttpMethod.Get, $"{ApiUrl}/search{qs}");
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-
-            var response = await http.SendAsync(request);
-
-            if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-                return null;
-
-            if (!response.IsSuccessStatusCode) return null;
-
-            var json = await response.Content.ReadAsStreamAsync();
-            var doc = await JsonDocument.ParseAsync(json);
-
-            var pluralType = type == "track" ? "tracks" : "albums";
-            var items = doc.RootElement.GetProperty(pluralType).GetProperty("items").EnumerateArray().ToList();
-            if (items.Count > 0)
-                return items[0].GetProperty("id").GetString();
-
-            return null;
+            var retryAfter = (int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30);
+            return (null, retryAfter);
         }
-        return null;
+
+        if (!response.IsSuccessStatusCode) return (null, 0);
+
+        var json = await response.Content.ReadAsStreamAsync();
+        var doc = await JsonDocument.ParseAsync(json);
+
+        var pluralType = type == "track" ? "tracks" : "albums";
+        var items = doc.RootElement.GetProperty(pluralType).GetProperty("items").EnumerateArray().ToList();
+        if (items.Count > 0)
+            return (items[0].GetProperty("id").GetString(), 0);
+
+        return (null, 0);
     }
 
     public async Task LikeTracksAsync(SpotifySession session, IEnumerable<string> trackIds)

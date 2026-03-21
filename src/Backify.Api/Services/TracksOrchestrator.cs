@@ -4,27 +4,49 @@ namespace Backify.Api.Services;
 
 public class TracksOrchestrator(LastFmService lastFm, SpotifyService spotify)
 {
-    public async Task<List<PreviewItem>> PreviewAsync(LastFmSession lfm, SpotifySession sp, int n, string period)
+    public async Task<PreviewResponse> PreviewAsync(LastFmSession lfm, SpotifySession sp, int n, string period)
     {
         var tracks = await lastFm.GetTopTracksAsync(lfm.Username, n, period);
+        return await SearchItemsAsync(sp, tracks);
+    }
 
-        var semaphore = new SemaphoreSlim(3); // max 3 concurrent Spotify searches
-        var tasks = tracks.Select(async track =>
+    public async Task<PreviewResponse> SearchItemsAsync(SpotifySession sp, List<PreviewItem> items)
+    {
+        var cts = new CancellationTokenSource();
+        int rateLimitSeconds = 0;
+        var semaphore = new SemaphoreSlim(3);
+
+        var tasks = items.Select(async item =>
         {
-            await semaphore.WaitAsync();
+            bool acquired = false;
             try
             {
-                var id = await spotify.SearchTrackAsync(sp, track.Name, track.Artist);
-                track.SpotifyId = id;
-                track.Found = id != null;
-                return track;
+                await semaphore.WaitAsync(cts.Token);
+                acquired = true;
+            }
+            catch (OperationCanceledException)
+            {
+                return item;
+            }
+            try
+            {
+                var (id, rl) = await spotify.SearchTrackAsync(sp, item.Name, item.Artist);
+                if (rl > 0)
+                {
+                    Interlocked.CompareExchange(ref rateLimitSeconds, rl, 0);
+                    cts.Cancel();
+                }
+                item.SpotifyId = rl == 0 ? id : null;
+                item.Found = rl == 0 && id != null;
+                return item;
             }
             finally
             {
-                semaphore.Release();
+                if (acquired) semaphore.Release();
             }
         });
 
-        return (await Task.WhenAll(tasks)).ToList();
+        var results = await Task.WhenAll(tasks);
+        return new PreviewResponse { Items = results.ToList(), RateLimitSeconds = rateLimitSeconds };
     }
 }
