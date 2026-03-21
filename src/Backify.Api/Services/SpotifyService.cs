@@ -146,7 +146,7 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
             if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
             {
                 var retryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(5);
-                await Task.Delay(retryAfter);
+                await Task.Delay(TimeSpan.FromSeconds(Math.Min(retryAfter.TotalSeconds, 8)));
                 continue;
             }
 
