@@ -199,9 +199,9 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
     public async Task FollowArtistsAsync(SpotifySession session, IEnumerable<string> artistIds)
     {
         var token = await GetValidTokenAsync(session);
-        var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/following?type=artist");
+        var idsParam = string.Join(",", artistIds);
+        var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/following?type=artist&ids={idsParam}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
-        request.Content = System.Net.Http.Json.JsonContent.Create(new { ids = artistIds.ToArray() });
         var response = await http.SendAsync(request);
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
             throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
