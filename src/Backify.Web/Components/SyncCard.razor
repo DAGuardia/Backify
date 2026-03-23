@@ -1,5 +1,6 @@
 @inject HttpClient Http
 @inject NavigationManager Nav
+@inject IJSRuntime JS
 
 <div class="card">
     <div class="card-header">
@@ -14,7 +15,7 @@
     <div class="controls">
         <div class="control-group">
             <label class="control-label">
-                Top <span>@N</span> @(IsTrack ? "tracks" : "albums")
+                Top <span>@N</span> @(IsTrack ? "tracks" : IsArtist ? "artists" : "albums")
             </label>
             <input type="range" min="1" max="@MaxN" @bind="N" @bind:event="oninput"
                    disabled="@IsBusy" />
@@ -31,6 +32,14 @@
                 <option value="7day">Last 7 days</option>
             </select>
         </div>
+        @if (IsTrack)
+        {
+            <div class="control-group" style="max-width:130px">
+                <label class="control-label">Start from rank</label>
+                <input type="number" min="1" max="@MaxN" @bind="_searchFrom" disabled="@IsBusy"
+                       style="width:100%;padding:.35rem .5rem;background:var(--input-bg);border:1px solid var(--border);border-radius:6px;color:var(--text);font-size:.875rem" />
+            </div>
+        }
     </div>
 
     <!-- Buttons -->
@@ -41,7 +50,7 @@
                 @if (Status == SyncStatus.Previewing)
                 {
                     <div class="spinner"></div>
-                    <span>Searching Spotify...</span>
+                    <span>Searching...@(_totalToSearch > 0 ? $" {_searchedCount}/{_totalToSearch}" : "")</span>
                 }
                 else
                 {
@@ -126,7 +135,7 @@
     }
 
     <!-- Preview table -->
-    @if (Results.Count > 0 && Status is SyncStatus.PreviewDone or SyncStatus.Applying or SyncStatus.RateLimited or SyncStatus.Done or SyncStatus.Error)
+    @if (Results.Count > 0 && Status is not SyncStatus.Idle)
     {
         <PreviewTable Items="Results" Type="@Type"
                       Selected="_selected"
@@ -158,12 +167,48 @@
     int _countdownSeconds = 0;
     int _countdownTotal = 0;
     CancellationTokenSource? _countdownCts;
+    List<PreviewTable.PreviewItemDto> _pendingSearch = new();
+    HashSet<int> _searchedRanks = new();
+    int _searchedCount = 0;
+    int _totalToSearch = 0;
+    int _searchFrom = 1;
 
     int FoundCount => Results.Count(r => r.Found && r.SpotifyId != null);
     int SelectedFoundCount => Results.Count(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!));
     int RemainingCount => _syncIds.Count - Progress.Done;
 
-    protected override void OnInitialized() => N = IsTrack ? 200 : 50;
+    protected override void OnInitialized()
+    {
+        N = IsTrack ? 1000 : 500;
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;
+
+        var saved = await LoadListAsync();
+        if (saved == null || saved.Items.Count == 0) return;
+
+        N = saved.N;
+        Period = saved.Period;
+
+        var cache = await LoadCacheAsync();
+        Results = saved.Items.Select(i =>
+        {
+            var key = CacheKey(i.Name, i.Artist);
+            return cache.TryGetValue(key, out var spotifyId)
+                ? new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, spotifyId, true, PreviewTable.SearchItemStatus.Done)
+                : new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, null, false, PreviewTable.SearchItemStatus.Pending);
+        }).ToList();
+        _selected = Results.Where(r => r.Found && r.SpotifyId != null).Select(r => r.SpotifyId!).ToHashSet();
+        var excluded = await LoadExcludedAsync();
+        foreach (var id in excluded) _selected.Remove(id);
+        _searchedRanks = Results.Where(r => r.SearchStatus == PreviewTable.SearchItemStatus.Done).Select(r => r.Rank).ToHashSet();
+        _searchedCount = _searchedRanks.Count;
+        _totalToSearch = Results.Count(r => r.SearchStatus == PreviewTable.SearchItemStatus.Pending);
+        Status = SyncStatus.PreviewDone;
+        StateHasChanged();
+    }
 
 
     PreviewTable.TablePhase TablePhaseFromStatus() => Status switch
@@ -177,15 +222,21 @@
     void ToggleSelected(string id)
     {
         if (!_selected.Add(id)) _selected.Remove(id);
+        _ = SaveExcludedAsync();
     }
 
     void SelectAll()
     {
         foreach (var r in Results.Where(r => r.Found && r.SpotifyId != null))
             _selected.Add(r.SpotifyId!);
+        _ = SaveExcludedAsync();
     }
 
-    void DeselectAll() => _selected.Clear();
+    void DeselectAll()
+    {
+        _selected.Clear();
+        _ = SaveExcludedAsync();
+    }
 
     async Task HandlePreview()
     {
@@ -195,107 +246,139 @@
         _syncedIds = new();
         _syncIds = new();
         _previewRateLimited = false;
+        _searchedRanks = new();
+        _searchedCount = 0;
+        _totalToSearch = 0;
         ErrorMessage = null;
         StateHasChanged();
 
         try
         {
-            var url = $"{Type}/preview?n={N}&period={Period}";
-            var response = await Http.GetFromJsonAsync<ApiPreviewResponse>(url);
-            ProcessPreviewResponse(response!);
+            // 1. Fetch Last.fm list
+            var lfmItems = await Http.GetFromJsonAsync<List<ApiPreviewItem>>($"{Type}/list?n={N}&period={Period}");
+            await SaveListAsync(lfmItems!, N, Period);
 
-            if (response!.RateLimitSeconds > 0)
+            // 2. Apply cache — pre-populate found items, pending for the rest
+            var cache = await LoadCacheAsync();
+            Results = lfmItems!.Select(i =>
             {
-                _previewRateLimited = true;
-                await StartCountdown(
-                    response.RateLimitSeconds + 2,
-                    HandleRetrySearch,
-                    () => { Status = SyncStatus.PreviewDone; _previewRateLimited = true; StateHasChanged(); }
-                );
-            }
-            else
-            {
-                Status = SyncStatus.PreviewDone;
-            }
+                var key = CacheKey(i.Name, i.Artist);
+                return cache.TryGetValue(key, out var spotifyId)
+                    ? new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, spotifyId, true, PreviewTable.SearchItemStatus.Done)
+                    : new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, null, false, PreviewTable.SearchItemStatus.Pending);
+            }).ToList();
+            _selected = Results.Where(r => r.Found && r.SpotifyId != null).Select(r => r.SpotifyId!).ToHashSet();
+            var excluded = await LoadExcludedAsync();
+            foreach (var id in excluded) _selected.Remove(id);
+            _searchedRanks = Results.Where(r => r.SearchStatus == PreviewTable.SearchItemStatus.Done).Select(r => r.Rank).ToHashSet();
+            StateHasChanged();
+
+            // 3. Stream search for uncached items (tracks: respect _searchFrom offset)
+            _pendingSearch = Results.Where(r => r.SearchStatus == PreviewTable.SearchItemStatus.Pending
+                && (!IsTrack || r.Rank >= _searchFrom)).ToList();
+            _totalToSearch = _pendingSearch.Count;
+
+            if (_pendingSearch.Count == 0) { Status = SyncStatus.PreviewDone; return; }
+
+            await StreamSearch(_pendingSearch);
         }
         catch (Exception ex)
         {
             ErrorMessage = ex.Message;
             Status = SyncStatus.Error;
+            StateHasChanged();
         }
     }
 
-    void ProcessPreviewResponse(ApiPreviewResponse response)
+    async Task StreamSearch(List<PreviewTable.PreviewItemDto> items)
     {
-        var newItems = response.Items.Select(i =>
-            new PreviewTable.PreviewItemDto(i.Rank, i.Name, i.Artist, i.PlayCount, i.SpotifyId, i.Found)
-        ).ToList();
+        Status = SyncStatus.Previewing;
+        var searchedInThisStream = new HashSet<int>();
 
-        if (Results.Count == 0)
-        {
-            Results = newItems;
-            _selected = Results.Where(r => r.Found && r.SpotifyId != null).Select(r => r.SpotifyId!).ToHashSet();
-        }
-        else
-        {
-            var byRank = newItems.ToDictionary(i => i.Rank);
-            Results = Results.Select(r => !r.Found && byRank.TryGetValue(r.Rank, out var updated) ? updated : r).ToList();
-            foreach (var r in Results.Where(r => r.Found && r.SpotifyId != null))
-                _selected.Add(r.SpotifyId!);
-        }
-    }
-
-    async Task<int> HandleRetrySearch()
-    {
-        var unmatched = Results.Where(r => !r.Found)
-            .Select(r => new { r.Rank, r.Name, r.Artist, r.PlayCount })
-            .ToList();
-
-        if (unmatched.Count == 0)
-        {
-            _previewRateLimited = false;
-            Status = SyncStatus.PreviewDone;
-            return 0;
-        }
+        var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post,
+            $"{Http.BaseAddress}{Type}/search-stream");
+        request.Content = System.Net.Http.Json.JsonContent.Create(
+            items.Select(r => new { r.Rank, r.Name, r.Artist, r.PlayCount }).ToList());
 
         try
         {
-            var url = $"{Type}/search-items";
-            var httpResponse = await Http.PostAsJsonAsync(url, unmatched);
-            httpResponse.EnsureSuccessStatusCode();
-            var result = await httpResponse.Content.ReadFromJsonAsync<ApiPreviewResponse>();
+            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            response.EnsureSuccessStatusCode();
+            using var stream = await response.Content.ReadAsStreamAsync();
+            using var reader = new System.IO.StreamReader(stream);
 
-            ProcessPreviewResponse(result!);
-
-            if (result!.RateLimitSeconds > 0)
+            while (!reader.EndOfStream)
             {
-                _previewRateLimited = true;
-                return result.RateLimitSeconds + 2;
+                var line = await reader.ReadLineAsync();
+                if (string.IsNullOrEmpty(line) || !line.StartsWith("data: ")) continue;
+
+                var json = line["data: ".Length..];
+                var evt = System.Text.Json.JsonSerializer.Deserialize<SearchEventDto>(json,
+                    new System.Text.Json.JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+                if (evt == null) continue;
+
+                switch (evt.Type)
+                {
+                    case "searching":
+                        SetItemSearchStatus(evt.Item!.Rank, PreviewTable.SearchItemStatus.Searching);
+                        await InvokeAsync(StateHasChanged);
+                        break;
+
+                    case "result":
+                        var r = evt.Item!;
+                        searchedInThisStream.Add(r.Rank);
+                        _searchedRanks.Add(r.Rank);
+                        _searchedCount++;
+                        Results = Results.Select(x => x.Rank == r.Rank
+                            ? x with { SpotifyId = r.SpotifyId, Found = r.Found, SearchStatus = PreviewTable.SearchItemStatus.Done }
+                            : x).ToList();
+                        if (r.Found && r.SpotifyId != null) _selected.Add(r.SpotifyId);
+                        await SaveCacheAsync();
+                        await InvokeAsync(StateHasChanged);
+                        break;
+
+                    case "ratelimit":
+                        _pendingSearch = items.Where(x => !searchedInThisStream.Contains(x.Rank)).ToList();
+                        await InvokeAsync(StateHasChanged);
+                        await StartCountdown(
+                            evt.WaitSeconds + 2,
+                            async () => { await StreamSearch(_pendingSearch); return 0; },
+                            () => { Status = SyncStatus.PreviewDone; _previewRateLimited = true; InvokeAsync(StateHasChanged); }
+                        );
+                        return;
+
+                    case "error":
+                        ErrorMessage = evt.ErrorMessage ?? "An error occurred. Please log out and log back in.";
+                        Status = SyncStatus.Error;
+                        await InvokeAsync(StateHasChanged);
+                        return;
+
+                    case "done":
+                        Status = SyncStatus.PreviewDone;
+                        await InvokeAsync(StateHasChanged);
+                        return;
+                }
             }
 
-            _previewRateLimited = false;
-            Status = SyncStatus.PreviewDone;
-            return 0;
+            if (Status == SyncStatus.Previewing) Status = SyncStatus.PreviewDone;
         }
         catch (Exception ex)
         {
             ErrorMessage = ex.Message;
             Status = SyncStatus.Error;
-            return 0;
         }
+        StateHasChanged();
     }
+
+    void SetItemSearchStatus(int rank, PreviewTable.SearchItemStatus status)
+        => Results = Results.Select(r => r.Rank == rank ? r with { SearchStatus = status } : r).ToList();
 
     async Task TriggerRetrySearch()
     {
-        Status = SyncStatus.Previewing;
-        StateHasChanged();
-        var wait = await HandleRetrySearch();
-        if (wait > 0)
-            await StartCountdown(
-                wait,
-                HandleRetrySearch,
-                () => { Status = SyncStatus.PreviewDone; _previewRateLimited = true; StateHasChanged(); }
-            );
+        if (_pendingSearch.Count == 0)
+            _pendingSearch = Results.Where(r => r.SearchStatus != PreviewTable.SearchItemStatus.Done || !r.Found)
+                .Where(r => !_searchedRanks.Contains(r.Rank)).ToList();
+        await StreamSearch(_pendingSearch);
     }
 
     async Task HandleApply()
@@ -357,12 +440,13 @@
         ErrorMessage = null;
         StateHasChanged();
 
-        var idsParam = Uri.EscapeDataString(string.Join(",", toSync));
-        var streamUrl = $"{Http.BaseAddress}{Type}/apply/stream?ids={idsParam}";
+        var streamUrl = $"{Http.BaseAddress}{Type}/apply/stream";
 
         try
         {
-            using var response = await Http.GetAsync(streamUrl, HttpCompletionOption.ResponseHeadersRead);
+            var request = new System.Net.Http.HttpRequestMessage(System.Net.Http.HttpMethod.Post, streamUrl);
+            request.Content = System.Net.Http.Json.JsonContent.Create(toSync);
+            using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
             response.EnsureSuccessStatusCode();
 
             using var stream = await response.Content.ReadAsStreamAsync();
@@ -420,6 +504,9 @@
         _syncedIds = new();
         _syncIds = new();
         _previewRateLimited = false;
+        _ = JS.InvokeVoidAsync("localStorage.removeItem", _listStorageKey);
+        _ = JS.InvokeVoidAsync("localStorage.removeItem", _cacheStorageKey);
+        _ = JS.InvokeVoidAsync("localStorage.removeItem", _excludedStorageKey);
     }
 
     static string FormatCountdown(int seconds)
@@ -430,9 +517,98 @@
         return h > 0 ? $"{h}:{m:D2}:{s:D2}" : $"{m}:{s:D2}";
     }
 
+    // Cache helpers — persists found Spotify IDs and excluded selections in localStorage
+    string _cacheStorageKey => $"backify_{Type}";
+    string _excludedStorageKey => $"backify_{Type}_excluded";
+    string _listStorageKey => $"backify_{Type}_list";
+    static string CacheKey(string name, string artist) => $"{name.ToLowerInvariant()}|{artist.ToLowerInvariant()}";
+
+    async Task<Dictionary<string, string>> LoadCacheAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", _cacheStorageKey);
+            if (string.IsNullOrEmpty(json)) return new();
+            return System.Text.Json.JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? new();
+        }
+        catch { return new(); }
+    }
+
+    async Task SaveCacheAsync()
+    {
+        try
+        {
+            var existing = await LoadCacheAsync();
+            foreach (var r in Results.Where(r => r.Found && r.SpotifyId != null))
+                existing[CacheKey(r.Name, r.Artist)] = r.SpotifyId!;
+            await JS.InvokeVoidAsync("localStorage.setItem", _cacheStorageKey,
+                System.Text.Json.JsonSerializer.Serialize(existing));
+        }
+        catch { }
+    }
+
+    async Task<HashSet<string>> LoadExcludedAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", _excludedStorageKey);
+            if (string.IsNullOrEmpty(json)) return new();
+            return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(json) ?? new();
+        }
+        catch { return new(); }
+    }
+
+    async Task SaveExcludedAsync()
+    {
+        try
+        {
+            var excluded = Results
+                .Where(r => r.Found && r.SpotifyId != null && !_selected.Contains(r.SpotifyId!))
+                .Select(r => r.SpotifyId!)
+                .ToHashSet();
+            await JS.InvokeVoidAsync("localStorage.setItem", _excludedStorageKey,
+                System.Text.Json.JsonSerializer.Serialize(excluded));
+        }
+        catch { }
+    }
+
+    async Task SaveListAsync(List<ApiPreviewItem> items, int n, string period)
+    {
+        try
+        {
+            var dto = new ListCacheDto(n, period, items);
+            await JS.InvokeVoidAsync("localStorage.setItem", _listStorageKey,
+                System.Text.Json.JsonSerializer.Serialize(dto));
+        }
+        catch { }
+    }
+
+    async Task<ListCacheDto?> LoadListAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", _listStorageKey);
+            if (string.IsNullOrEmpty(json)) return null;
+            // Try new format first, fall back to old plain-array format
+            try
+            {
+                return System.Text.Json.JsonSerializer.Deserialize<ListCacheDto>(json);
+            }
+            catch
+            {
+                var items = System.Text.Json.JsonSerializer.Deserialize<List<ApiPreviewItem>>(json);
+                return items == null ? null : new ListCacheDto(N, Period, items);
+            }
+        }
+        catch { return null; }
+    }
+
     enum SyncStatus { Idle, Previewing, PreviewDone, Applying, RateLimited, Done, Error }
 
     record ApiPreviewItem(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found);
+    record ListCacheDto(int N, string Period, List<ApiPreviewItem> Items);
     record ApiPreviewResponse(List<ApiPreviewItem> Items, int RateLimitSeconds);
     record ProgressEventDto(int Done, int Total, bool Complete, string? Error, bool RateLimit, int WaitSeconds);
+    record SearchEventDto(string Type, SearchEventItem? Item, int WaitSeconds, string? ErrorMessage);
+    record SearchEventItem(int Rank, string? SpotifyId, bool Found);
 }

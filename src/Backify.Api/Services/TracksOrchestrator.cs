@@ -4,49 +4,52 @@ namespace Backify.Api.Services;
 
 public class TracksOrchestrator(LastFmService lastFm, SpotifyService spotify)
 {
+    public async Task<List<PreviewItem>> GetListAsync(LastFmSession lfm, int n, string period)
+        => await lastFm.GetTopTracksAsync(lfm.Username, n, period);
+
     public async Task<PreviewResponse> PreviewAsync(LastFmSession lfm, SpotifySession sp, int n, string period)
     {
         var tracks = await lastFm.GetTopTracksAsync(lfm.Username, n, period);
         return await SearchItemsAsync(sp, tracks);
     }
 
+    public async IAsyncEnumerable<SearchStreamEvent> SearchStreamAsync(SpotifySession sp, List<PreviewItem> items)
+    {
+        for (int i = 0; i < items.Count; i++)
+        {
+            var item = items[i];
+            yield return new SearchStreamEvent { Type = "searching", Item = item };
+
+            var (id, rl) = await spotify.SearchTrackAsync(sp, item.Name, item.Artist);
+            if (rl == -1) { yield return new SearchStreamEvent { Type = "error", ErrorMessage = "Spotify returned 403 Forbidden. Your session may be invalid — please log out and log back in." }; yield break; }
+            if (rl > 0) { yield return new SearchStreamEvent { Type = "ratelimit", WaitSeconds = rl }; yield break; }
+
+            item.SpotifyId = id;
+            item.Found = id != null;
+            yield return new SearchStreamEvent { Type = "result", Item = item };
+
+            if (i < items.Count - 1) await Task.Delay(2000);
+        }
+        yield return new SearchStreamEvent { Type = "done" };
+    }
+
     public async Task<PreviewResponse> SearchItemsAsync(SpotifySession sp, List<PreviewItem> items)
     {
-        var cts = new CancellationTokenSource();
         int rateLimitSeconds = 0;
-        var semaphore = new SemaphoreSlim(3);
 
-        var tasks = items.Select(async item =>
+        foreach (var item in items)
         {
-            bool acquired = false;
-            try
+            var (id, rl) = await spotify.SearchTrackAsync(sp, item.Name, item.Artist);
+            if (rl > 0)
             {
-                await semaphore.WaitAsync(cts.Token);
-                acquired = true;
+                rateLimitSeconds = rl;
+                break;
             }
-            catch (OperationCanceledException)
-            {
-                return item;
-            }
-            try
-            {
-                var (id, rl) = await spotify.SearchTrackAsync(sp, item.Name, item.Artist);
-                if (rl > 0)
-                {
-                    Interlocked.CompareExchange(ref rateLimitSeconds, rl, 0);
-                    cts.Cancel();
-                }
-                item.SpotifyId = rl == 0 ? id : null;
-                item.Found = rl == 0 && id != null;
-                return item;
-            }
-            finally
-            {
-                if (acquired) semaphore.Release();
-            }
-        });
+            item.SpotifyId = id;
+            item.Found = id != null;
+            await Task.Delay(2000);
+        }
 
-        var results = await Task.WhenAll(tasks);
-        return new PreviewResponse { Items = results.ToList(), RateLimitSeconds = rateLimitSeconds };
+        return new PreviewResponse { Items = items, RateLimitSeconds = rateLimitSeconds };
     }
 }

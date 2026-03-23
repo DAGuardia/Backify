@@ -11,6 +11,16 @@ public class TracksController(TracksOrchestrator orchestrator, SpotifyService sp
 {
     private static readonly HashSet<string> ValidPeriods = ["overall", "7day", "1month", "3month", "6month", "12month"];
 
+    [HttpGet("list")]
+    public async Task<IActionResult> List([FromQuery] int n = 200, [FromQuery] string period = "overall")
+    {
+        if (!GetSessions(out var lfm, out _))
+            return Unauthorized(new { error = "Not authenticated" });
+        if (n < 1 || n > 1000 || !ValidPeriods.Contains(period))
+            return BadRequest(new { error = "Invalid parameters" });
+        return Ok(await orchestrator.GetListAsync(lfm!, n, period));
+    }
+
     [HttpGet("preview")]
     public async Task<IActionResult> Preview([FromQuery] int n = 200, [FromQuery] string period = "overall")
     {
@@ -37,8 +47,22 @@ public class TracksController(TracksOrchestrator orchestrator, SpotifyService sp
         return Ok(response);
     }
 
-    [HttpGet("apply/stream")]
-    public async Task ApplyStream([FromQuery] string ids)
+    [HttpPost("search-stream")]
+    public async Task SearchStream([FromBody] List<PreviewItem> items)
+    {
+        if (!GetSessions(out _, out var sp)) { Response.StatusCode = 401; return; }
+        if (items == null || items.Count == 0) { Response.StatusCode = 400; return; }
+        Response.Headers.Append("Content-Type", "text/event-stream");
+        Response.Headers.Append("Cache-Control", "no-cache");
+        await foreach (var evt in orchestrator.SearchStreamAsync(sp!, items))
+        {
+            await Response.WriteAsync($"data: {JsonSerializer.Serialize(evt)}\n\n");
+            await Response.Body.FlushAsync();
+        }
+    }
+
+    [HttpPost("apply/stream")]
+    public async Task ApplyStream([FromBody] List<string> ids)
     {
         if (!GetSessions(out _, out var sp))
         {
@@ -46,7 +70,7 @@ public class TracksController(TracksOrchestrator orchestrator, SpotifyService sp
             return;
         }
 
-        var trackIds = ids.Split(',', StringSplitOptions.RemoveEmptyEntries).ToList();
+        var trackIds = ids ?? [];
         if (trackIds.Count == 0)
         {
             Response.StatusCode = 400;
@@ -72,7 +96,7 @@ public class TracksController(TracksOrchestrator orchestrator, SpotifyService sp
                 await Response.WriteAsync($"data: {evt}\n\n");
                 await Response.Body.FlushAsync();
 
-                if (done < total) await Task.Delay(350);
+                if (done < total) await Task.Delay(1000);
             }
         }
         catch (SpotifyRateLimitException rl)

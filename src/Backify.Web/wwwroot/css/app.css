@@ -129,6 +129,13 @@ select:focus { outline: none; border-color: var(--border-hover); }
   width: 16px; height: 16px; border: 2px solid rgba(255,255,255,0.3);
   border-top-color: white; border-radius: 50%; animation: spin .7s linear infinite;
 }
+.spinner-sm {
+  width: 12px; height: 12px; border: 2px solid rgba(255,255,255,0.15);
+  border-top-color: var(--text-muted); border-radius: 50%; animation: spin .7s linear infinite;
+  display: inline-block; vertical-align: middle;
+}
+.search-pending { color: var(--text-muted); font-size: 0.9rem; letter-spacing: 2px; }
+.row-pending td { opacity: 0.35; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* Done state */

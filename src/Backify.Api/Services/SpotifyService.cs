@@ -7,7 +7,7 @@ using Backify.Api.Models;
 
 namespace Backify.Api.Services;
 
-public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAccessor httpContextAccessor)
+public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAccessor httpContextAccessor, SpotifyTelemetryService telemetry)
 {
     private const string AccountsUrl = "https://accounts.spotify.com";
     private const string ApiUrl = "https://api.spotify.com/v1";
@@ -114,8 +114,9 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var q1 = $"track:\"{track}\" artist:\"{artist}\"";
         var (id1, rl1) = await DoSearchAsync(token, q1, "track");
         if (id1 != null) return (id1, 0);
-        if (rl1 > 0) return (null, rl1);
+        if (rl1 != 0) return (null, rl1);
 
+        await Task.Delay(1000);
         var q2 = $"{track} {artist}";
         return await DoSearchAsync(token, q2, "track");
     }
@@ -127,12 +128,14 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var q1 = $"album:\"{album}\" artist:\"{artist}\"";
         var (id1, rl1) = await DoSearchAsync(token, q1, "album");
         if (id1 != null) return (id1, 0);
-        if (rl1 > 0) return (null, rl1);
+        if (rl1 != 0) return (null, rl1);
 
+        await Task.Delay(1000);
         var q2 = $"{album} {artist}";
         return await DoSearchAsync(token, q2, "album");
     }
 
+    // RateLimitSeconds == -1 means Forbidden (fatal, stop stream)
     private async Task<(string? Id, int RateLimitSeconds)> DoSearchAsync(string token, string query, string type)
     {
         var qs = $"?q={Uri.EscapeDataString(query)}&type={type}&limit=1";
@@ -140,21 +143,35 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
         var response = await http.SendAsync(request);
+        var statusCode = (int)response.StatusCode;
 
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
         {
             var retryAfter = (int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30);
+            telemetry.Record(new SpotifyTelemetryEntry { Operation = $"search_{type}", Query = query, StatusCode = statusCode, RateLimited = true, RetryAfterSeconds = retryAfter });
             return (null, retryAfter);
         }
 
-        if (!response.IsSuccessStatusCode) return (null, 0);
+        if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
+        {
+            telemetry.Record(new SpotifyTelemetryEntry { Operation = $"search_{type}", Query = query, StatusCode = statusCode });
+            return (null, -1);
+        }
+
+        if (!response.IsSuccessStatusCode)
+        {
+            telemetry.Record(new SpotifyTelemetryEntry { Operation = $"search_{type}", Query = query, StatusCode = statusCode });
+            return (null, 0);
+        }
 
         var json = await response.Content.ReadAsStreamAsync();
         var doc = await JsonDocument.ParseAsync(json);
 
         var pluralType = type switch { "track" => "tracks", "artist" => "artists", _ => "albums" };
         var items = doc.RootElement.GetProperty(pluralType).GetProperty("items").EnumerateArray().ToList();
-        if (items.Count > 0)
+        var found = items.Count > 0;
+        telemetry.Record(new SpotifyTelemetryEntry { Operation = $"search_{type}", Query = query, StatusCode = statusCode, Success = found });
+        if (found)
             return (items[0].GetProperty("id").GetString(), 0);
 
         return (null, 0);
@@ -167,44 +184,66 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
         var q1 = $"artist:\"{artist}\"";
         var (id1, rl1) = await DoSearchAsync(token, q1, "artist");
         if (id1 != null) return (id1, 0);
-        if (rl1 > 0) return (null, rl1);
+        if (rl1 != 0) return (null, rl1);
 
+        await Task.Delay(1000);
         return await DoSearchAsync(token, artist, "artist");
     }
 
     public async Task LikeTracksAsync(SpotifySession session, IEnumerable<string> trackIds)
     {
+        var idList = trackIds.ToList();
         var token = await GetValidTokenAsync(session);
-        var uris = string.Join(",", trackIds.Select(id => Uri.EscapeDataString($"spotify:track:{id}")));
+        var uris = string.Join(",", idList.Select(id => Uri.EscapeDataString($"spotify:track:{id}")));
         var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/library?uris={uris}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await http.SendAsync(request);
+        var statusCode = (int)response.StatusCode;
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-            throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
+        {
+            var retryAfter = (int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30);
+            telemetry.Record(new SpotifyTelemetryEntry { Operation = "like_tracks", Query = $"batch:{idList.Count}", StatusCode = statusCode, RateLimited = true, RetryAfterSeconds = retryAfter });
+            throw new SpotifyRateLimitException(retryAfter);
+        }
+        telemetry.Record(new SpotifyTelemetryEntry { Operation = "like_tracks", Query = $"batch:{idList.Count}", StatusCode = statusCode, Success = response.IsSuccessStatusCode });
         response.EnsureSuccessStatusCode();
     }
 
     public async Task SaveAlbumsAsync(SpotifySession session, IEnumerable<string> albumIds)
     {
+        var idList = albumIds.ToList();
         var token = await GetValidTokenAsync(session);
-        var uris = string.Join(",", albumIds.Select(id => Uri.EscapeDataString($"spotify:album:{id}")));
+        var uris = string.Join(",", idList.Select(id => Uri.EscapeDataString($"spotify:album:{id}")));
         var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/library?uris={uris}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await http.SendAsync(request);
+        var statusCode = (int)response.StatusCode;
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-            throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
+        {
+            var retryAfter = (int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30);
+            telemetry.Record(new SpotifyTelemetryEntry { Operation = "save_albums", Query = $"batch:{idList.Count}", StatusCode = statusCode, RateLimited = true, RetryAfterSeconds = retryAfter });
+            throw new SpotifyRateLimitException(retryAfter);
+        }
+        telemetry.Record(new SpotifyTelemetryEntry { Operation = "save_albums", Query = $"batch:{idList.Count}", StatusCode = statusCode, Success = response.IsSuccessStatusCode });
         response.EnsureSuccessStatusCode();
     }
 
     public async Task FollowArtistsAsync(SpotifySession session, IEnumerable<string> artistIds)
     {
+        var idList = artistIds.ToList();
         var token = await GetValidTokenAsync(session);
-        var idsParam = string.Join(",", artistIds);
+        var idsParam = string.Join(",", idList);
         var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/following?type=artist&ids={idsParam}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await http.SendAsync(request);
+        var statusCode = (int)response.StatusCode;
         if (response.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
-            throw new SpotifyRateLimitException((int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30));
+        {
+            var retryAfter = (int)(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? 30);
+            telemetry.Record(new SpotifyTelemetryEntry { Operation = "follow_artists", Query = $"batch:{idList.Count}", StatusCode = statusCode, RateLimited = true, RetryAfterSeconds = retryAfter });
+            throw new SpotifyRateLimitException(retryAfter);
+        }
+        telemetry.Record(new SpotifyTelemetryEntry { Operation = "follow_artists", Query = $"batch:{idList.Count}", StatusCode = statusCode, Success = response.IsSuccessStatusCode });
         response.EnsureSuccessStatusCode();
     }
 }

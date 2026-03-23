@@ -13,6 +13,7 @@ builder.Services.AddHttpClient<SpotifyService>();
 
 // Services
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<SpotifyTelemetryService>();
 builder.Services.AddScoped<LastFmService>();
 builder.Services.AddScoped<SpotifyService>();
 builder.Services.AddScoped<TracksOrchestrator>();

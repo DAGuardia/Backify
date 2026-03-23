@@ -1,11 +1,22 @@
 @if (Items.Count > 0)
 {
     var found = Items.Count(i => i.Found);
-    var notFound = Items.Count - found;
+    var searched = Items.Count(i => i.SearchStatus == SearchItemStatus.Done);
+    var total = Items.Count;
+    var notFound = Items.Count(i => i.SearchStatus == SearchItemStatus.Done && !i.Found);
     var synced = SyncedIds.Count;
 
     <div class="preview-summary">
-        <span><span class="found">@found</span> of @Items.Count found on Spotify</span>
+        <span>
+            @if (searched < total)
+            {
+                <span><span class="found">@found</span> found · <span style="color:var(--text-muted)">@searched/@total searched</span></span>
+            }
+            else
+            {
+                <span><span class="found">@found</span> of @total found on Spotify</span>
+            }
+        </span>
         <span style="display:flex;gap:.75rem;align-items:center">
             @if (Phase == TablePhase.Preview && notFound > 0)
             {
@@ -39,7 +50,8 @@
                     {
                         var isSynced = item.SpotifyId != null && SyncedIds.Contains(item.SpotifyId!);
                         var isSelected = item.SpotifyId != null && Selected.Contains(item.SpotifyId!);
-                        var rowClass = !item.Found ? "" :
+                        var rowClass = item.SearchStatus == SearchItemStatus.Pending ? "row-pending" :
+                            !item.Found ? "" :
                             isSynced ? "row-synced" :
                             Phase == TablePhase.Preview && !isSelected ? "row-skipped" : "";
 
@@ -49,7 +61,15 @@
                             @if (Type != "artists") { <td class="td-artist">@item.Artist</td> }
                             <td class="td-plays">@item.PlayCount.ToString("N0")</td>
                             <td class="td-status">
-                                @if (!item.Found)
+                                @if (item.SearchStatus == SearchItemStatus.Searching)
+                                {
+                                    <div class="spinner spinner-sm"></div>
+                                }
+                                else if (item.SearchStatus == SearchItemStatus.Pending)
+                                {
+                                    <span class="search-pending">···</span>
+                                }
+                                else if (!item.Found)
                                 {
                                     <span class="badge badge-notfound">Not found</span>
                                 }
@@ -89,6 +109,7 @@
     [Parameter] public EventCallback<string> OnToggle { get; set; }
 
     public enum TablePhase { Preview, Applying, Done }
+    public enum SearchItemStatus { Pending, Searching, Done }
 
-    public record PreviewItemDto(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found);
+    public record PreviewItemDto(int Rank, string Name, string Artist, int PlayCount, string? SpotifyId, bool Found, SearchItemStatus SearchStatus = SearchItemStatus.Done);
 }
