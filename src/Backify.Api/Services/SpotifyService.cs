@@ -42,6 +42,7 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
             ["code_challenge_method"] = "S256",
             ["code_challenge"] = codeChallenge,
             ["state"] = state,
+            ["show_dialog"] = "true",
         };
         var qs = string.Join("&", query.Select(p => $"{p.Key}={Uri.EscapeDataString(p.Value)}"));
         return $"{AccountsUrl}/authorize?{qs}";
@@ -232,8 +233,8 @@ public class SpotifyService(HttpClient http, AppConfig config, IHttpContextAcces
     {
         var idList = artistIds.ToList();
         var token = await GetValidTokenAsync(session);
-        var idsParam = string.Join(",", idList);
-        var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/following?type=artist&ids={idsParam}");
+        var uris = string.Join(",", idList.Select(id => Uri.EscapeDataString($"spotify:artist:{id}")));
+        var request = new HttpRequestMessage(HttpMethod.Put, $"{ApiUrl}/me/library?uris={uris}");
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         var response = await http.SendAsync(request);
         var statusCode = (int)response.StatusCode;

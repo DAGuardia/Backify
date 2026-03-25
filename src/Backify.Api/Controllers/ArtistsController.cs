@@ -81,7 +81,7 @@ public class ArtistsController(ArtistsOrchestrator orchestrator, SpotifyService 
         Response.Headers.Append("Cache-Control", "no-cache");
         Response.Headers.Append("Connection", "keep-alive");
 
-        var batches = artistIds.Chunk(50).ToList();
+        var batches = artistIds.Chunk(40).ToList();
         int done = 0;
         int total = artistIds.Count;
 

@@ -206,6 +206,7 @@
         _searchedRanks = Results.Where(r => r.SearchStatus == PreviewTable.SearchItemStatus.Done).Select(r => r.Rank).ToHashSet();
         _searchedCount = _searchedRanks.Count;
         _totalToSearch = Results.Count(r => r.SearchStatus == PreviewTable.SearchItemStatus.Pending);
+        _syncedIds = await LoadSyncedAsync();
         Status = SyncStatus.PreviewDone;
         StateHasChanged();
     }
@@ -384,7 +385,7 @@
     async Task HandleApply()
     {
         _syncIds = Results
-            .Where(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!))
+            .Where(r => r.Found && r.SpotifyId != null && _selected.Contains(r.SpotifyId!) && !_syncedIds.Contains(r.SpotifyId!))
             .Select(r => r.SpotifyId!)
             .ToList();
         var waitSeconds = await RunSync(0);
@@ -463,6 +464,7 @@
 
                 Progress = (startFrom + evt.Done, _syncIds.Count);
                 _syncedIds = _syncIds.Take(Progress.Done).ToHashSet();
+                await SaveSyncedAsync();
 
                 if (evt.RateLimit)
                 {
@@ -507,6 +509,7 @@
         _ = JS.InvokeVoidAsync("localStorage.removeItem", _listStorageKey);
         _ = JS.InvokeVoidAsync("localStorage.removeItem", _cacheStorageKey);
         _ = JS.InvokeVoidAsync("localStorage.removeItem", _excludedStorageKey);
+        _ = JS.InvokeVoidAsync("localStorage.removeItem", _syncedStorageKey);
     }
 
     static string FormatCountdown(int seconds)
@@ -521,6 +524,7 @@
     string _cacheStorageKey => $"backify_{Type}";
     string _excludedStorageKey => $"backify_{Type}_excluded";
     string _listStorageKey => $"backify_{Type}_list";
+    string _syncedStorageKey => $"backify_{Type}_synced";
     static string CacheKey(string name, string artist) => $"{name.ToLowerInvariant()}|{artist.ToLowerInvariant()}";
 
     async Task<Dictionary<string, string>> LoadCacheAsync()
@@ -570,6 +574,27 @@
                 System.Text.Json.JsonSerializer.Serialize(excluded));
         }
         catch { }
+    }
+
+    async Task SaveSyncedAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", _syncedStorageKey,
+                System.Text.Json.JsonSerializer.Serialize(_syncedIds));
+        }
+        catch { }
+    }
+
+    async Task<HashSet<string>> LoadSyncedAsync()
+    {
+        try
+        {
+            var json = await JS.InvokeAsync<string?>("localStorage.getItem", _syncedStorageKey);
+            if (string.IsNullOrEmpty(json)) return new();
+            return System.Text.Json.JsonSerializer.Deserialize<HashSet<string>>(json) ?? new();
+        }
+        catch { return new(); }
     }
 
     async Task SaveListAsync(List<ApiPreviewItem> items, int n, string period)
